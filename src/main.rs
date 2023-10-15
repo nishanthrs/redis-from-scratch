@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
                 match request {
                     Some(request) => {
                         for req_part in request.split("\r\n") {
-                            match req_part {
+                            match req_part.to_uppercase().as_str() {
                                 "PING" => stream.write(b"+PONG\r\n"),
                                 "" => {
                                     debug!("Reached end of input.");
