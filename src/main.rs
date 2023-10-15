@@ -28,8 +28,8 @@ fn handle_connection(stream: &mut TcpStream) -> anyhow::Result<()> {
                             debug!("Reached end of input.");
                             Ok(0)
                         }
-                        other_cmd => {
-                            debug!("Input: {} is currently not handled.", other_cmd);
+                        other_input => {
+                            debug!("Input: {} is currently not handled.", other_input);
                             Ok(0)
                         },
                     }.expect("Parsing request failed!");
