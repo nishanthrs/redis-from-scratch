@@ -54,8 +54,8 @@ async fn main() -> anyhow::Result<()> {
         match stream {
             Ok(mut stream) => {
                 info!("accepted new connection");
-                /* Creates a new thread for each connection; this is expensive and not feasible in the real world!
-                Better to use a thread pool with a fixed number of threads */
+                /* tokio::spawn creates an async task that runs the future (I/O function) passed as argument
+                Returns a Result<JoinHandle> (i.e. spawned async task) */
                 tokio::spawn(async move {
                     // Within same connection, accept multiple commands in loop; if # bytes read is 0, exit connection
                     handle_connection(&mut stream).await.expect("Something went wrong while handling connection.");
