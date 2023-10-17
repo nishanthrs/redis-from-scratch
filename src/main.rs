@@ -1,5 +1,6 @@
 use std::io::{Read,Write};
 use std::net::{TcpListener, TcpStream};
+use std::thread;
 use anyhow::bail;
 use log::{info,debug};
 use env_logger::{Env};
@@ -47,13 +48,15 @@ fn main() -> anyhow::Result<()> {
     env_logger::init_from_env(env);
 
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    
+
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
                 info!("accepted new connection");
-                // Within same connection, accept multiple commands in loop; if # bytes read is 0, exit connection
-                handle_connection(&mut stream).expect("Something went wrong while handling connection.");
+                thread::spawn(move || {
+                    // Within same connection, accept multiple commands in loop; if # bytes read is 0, exit connection
+                    handle_connection(&mut stream).expect("Something went wrong while handling connection.");
+                });
             }
             Err(e) => {
                 bail!("error: {}", e);
