@@ -9,7 +9,7 @@ use env_logger::{Env};
 const CHUNK_SIZE: usize = 1024;
 const NULL_BYTE: &str = "\0";
 
-async fn handle_connection(stream: &mut TcpStream) -> anyhow::Result<()> {
+fn handle_connection(stream: &mut TcpStream) -> anyhow::Result<()> {
     let mut read_buffer = [0;CHUNK_SIZE];
     loop {
         let num_bytes_read = stream.read(&mut read_buffer).expect("Reading from stream into buffer failed!");
@@ -43,8 +43,7 @@ async fn handle_connection(stream: &mut TcpStream) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let env = Env::default().default_filter_or("debug");
     env_logger::init_from_env(env);
 
@@ -56,9 +55,9 @@ async fn main() -> anyhow::Result<()> {
                 info!("accepted new connection");
                 /* Creates a new thread for each connection; this is expensive and not feasible in the real world!
                 Better to use a thread pool with a fixed number of threads */
-                tokio::spawn(async move {
+                thread::spawn(move || {
                     // Within same connection, accept multiple commands in loop; if # bytes read is 0, exit connection
-                    handle_connection(&mut stream).await.expect("Something went wrong while handling connection.");
+                    handle_connection(&mut stream).expect("Something went wrong while handling connection.");
                 });
             }
             Err(e) => {
