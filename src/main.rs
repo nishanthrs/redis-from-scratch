@@ -1,6 +1,5 @@
 use std::io::{Read,Write};
 use std::net::{TcpListener, TcpStream};
-use std::thread;
 use anyhow::bail;
 use log::{info,debug};
 use env_logger::{Env};
@@ -22,18 +21,28 @@ async fn handle_connection(stream: &mut TcpStream) -> anyhow::Result<()> {
         info!("Stream input: {:?}", request);
         match request {
             Some(request) => {
-                for req_part in request.split("\r\n") {
+                // Should return a Redis RESP array: https://redis.io/docs/reference/protocol-spec
+                let resp_array = request.split("\r\n").collect::<Vec<&str>>();
+                let first_elem = resp_array.get(0).expect("Client request not a RESP array; no \r\n separator found!");
+                let num_elems = first_elem[1..].parse::<usize>().expect("First element of client request is not a number!");
+                for (i, req_part) in resp_array[..resp_array.len()-3].iter().enumerate() {
                     match req_part.to_uppercase().as_str() {
                         "PING" => stream.write(b"+PONG\r\n"),
+                        "ECHO" => {
+                            // println!("Rest of RESP array: {:?}, {}", resp_array, i);
+                            let echo_output = format!("+{}\r\n", resp_array[i+2]);
+                            let echo_output_bytes = echo_output.as_bytes();
+                            stream.write(echo_output_bytes)
+                        },
                         "" => {
                             debug!("Reached end of input.");
                             Ok(0)
-                        }
+                        },
                         other_input => {
                             debug!("Input: {} is currently not handled.", other_input);
                             Ok(0)
-                        },
-                    }.expect("Parsing request failed!");
+                        }
+                    }.expect("Parsing part of request failed!");
                 }
             },
             None => bail!("No data after split by null byte"),
