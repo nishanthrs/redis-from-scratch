@@ -1,21 +1,27 @@
 use anyhow::bail;
 use log::{info,debug};
 use env_logger::{Env};
-// use std::collections::HashMap;
+use std::collections::HashMap;
 use std::io::{Read,Write};
 use std::net::{TcpListener, TcpStream};
 use std::str::FromStr;
 use strum_macros::EnumString;
+use std::sync::{Arc, Mutex};
 
 
 const NULL_BYTE: &str = "\0";
 const CHUNK_SIZE: usize = 1024;
 const RESP_DELIMITER: &str = "\r\n";
 
+// TODO: Learn about sync primitives like Arc and try out <Arc<Mutex<RedisServer>>!
+// The reason why you can't pass in self into the async move block in tokio is that:
+// Tokio doesn't allow a single piece of data to be accessible from more than one task concurrently! It must be shared using sync primitives like Arc and Mutex.
+// Learn more about Arc::clone and how it works. Read the Tokio docs as well. (also fb workplace)
 struct RedisServer {
     pub ip_addr: String,
     pub port_num: u16,
-    // pub cache: HashMap<String, &mut [u8]>
+    // TODO: Explore using a byte vector type and lifetimes
+    pub cache: Arc<Mutex<HashMap<String, String>>>
 }
 
 #[derive(Debug, EnumString)]
@@ -23,12 +29,14 @@ struct RedisServer {
 enum Command {
     Ping,
     Echo,
-    // Get,
-    // Set,
+    Get,
+    Set,
 }
 
 impl RedisServer {
     // TODO[1]: Make error-handling more robust; return any errors back to the client
+    // TODO[2]: Have helper functions return Result types so that errors can be handled properly
+    // TODO[3]: Don't pass in stream into each function; have the handle_cmd spit out output bytes instead and write that to stream in handle_connection function
 
     fn handle_ping_cmd(stream: &mut TcpStream) {
         /* Write to stream the response for PING commands */
@@ -45,11 +53,26 @@ impl RedisServer {
         stream.write(&echo_resp).expect("Writing ECHO response to stream failed!");
     }
 
-    // fn handle_set_cmd(stream: &mut TcpStream, resp_array: Vec<&str>);
+    fn handle_get_cmd(stream: &mut TcpStream, get_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
+        assert!(get_data.len() == 2, "Wrong number of args for GET command: {:?}!", get_data);
+        let key = get_data.get(1).expect("Couldn't find key in request!").to_string();
+        let c = cache.lock().unwrap();
+        let val = c.get(&key).expect("Key doesn't exist in cache!");
+        let get_resp = format!("+{}{}", val, RESP_DELIMITER).into_bytes();
+        stream.write(&get_resp).expect("Writing GET response to stream failed!");
+    }
 
-    // fn handle_get_cmd(stream: &mut TcpStream, resp_array: Vec<&str>);
+    fn handle_set_cmd(stream: &mut TcpStream, set_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
+        assert!(set_data.len() == 4, "Wrong number of args for SET command: {:?}!", set_data);
+        let key = set_data.get(1).expect("Couldn't find key in request!").to_string();
+        let val = set_data.get(3).expect("Couldn't find val in request!").to_string();
+        let mut c = cache.lock().unwrap();
+        c.insert(key, val);
+        let set_resp = format!("+OK{}", RESP_DELIMITER).into_bytes();
+        stream.write(&set_resp).expect("Writing SET response to stream failed!");
+    }
 
-    fn handle_cmd(redis_cmd: Command, request: &str, stream: &mut TcpStream) {
+    fn handle_cmd(redis_cmd: Command, request: &str, stream: &mut TcpStream, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
         // Should return a Redis RESP array: https://redis.io/docs/reference/protocol-spec
         let resp_array = request.split_terminator(RESP_DELIMITER).collect::<Vec<&str>>();
         match redis_cmd {
@@ -59,12 +82,12 @@ impl RedisServer {
             Command::Echo => {
                 Self::handle_echo_cmd(stream, resp_array[3..].to_vec())
             },
-            // Command::Get => {
-            //     bail!("GET cmd currently not implemented!")
-            // },
-            // Command::Set => {
-            //     bail!("SET cmd currently not implemented!")
-            // },
+            Command::Get => {
+                Self::handle_get_cmd(stream, resp_array[3..].to_vec(), cache)
+            },
+            Command::Set => {
+                Self::handle_set_cmd(stream, resp_array[3..].to_vec(), cache)
+            },
         };
     }
 
@@ -93,10 +116,11 @@ impl RedisServer {
         let cmd: &str = resp_array.get(2).expect(
             format!("Unable to find a command at idx 2 in RESP array: {}", request).as_str()
         );
+        // TODO[4]: Handle case in which cmd is not a valid Redis command
         Command::from_str(cmd.to_uppercase().as_str()).unwrap()
     }
 
-    async fn handle_connection(stream: &mut TcpStream) -> anyhow::Result<()> {
+    async fn handle_connection(stream: &mut TcpStream, cache: &mut Arc<Mutex<HashMap<String, String>>>) -> anyhow::Result<()> {
         /* Handle a given stream/connection/request in an async task */
         let mut read_buffer = [0; CHUNK_SIZE];
         loop {
@@ -111,7 +135,7 @@ impl RedisServer {
             match request {
                 Some(request) => {
                     let cmd = Self::decode_request(request);
-                    Self::handle_cmd(cmd, request, stream);
+                    Self::handle_cmd(cmd, request, stream, cache);
                 },
                 None => bail!("No data after split by null byte"),
             }
@@ -131,15 +155,20 @@ impl RedisServer {
             self.port_num
         );
         let tcp_listener = TcpListener::bind(tcp_listener_addr).unwrap();
+        let server_cache = &self.cache;
         for stream in tcp_listener.incoming() {
             match stream {
                 Ok(mut stream) => {
                     info!("Accepted new connection");
                     /* tokio::spawn creates an async task that runs the future (I/O function) passed as argument
                     Returns a Result<JoinHandle> (i.e. spawned async task) */
-                    tokio::spawn(async move {
-                        // Within same connection, accept multiple commands in loop; if # bytes read is 0, exit connection
-                        Self::handle_connection(&mut stream).await.expect("Something went wrong while handling connection.");
+                    tokio::spawn({
+                        // Reference for why Arc::clone is necessary: https://stackoverflow.com/questions/69955340/how-to-deal-with-tokiospawn-closure-required-to-be-static-and-self
+                        let mut cache = Arc::clone(&server_cache);
+                        async move {
+                            // Within same connection, accept multiple commands in loop; if # bytes read is 0, exit connection
+                            Self::handle_connection(&mut stream, &mut cache).await.expect("Something went wrong while handling connection.");
+                        }
                     });
                 }
                 Err(e) => {
@@ -161,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
     let redis_server = RedisServer {
         ip_addr: String::from("127.0.0.1"),
         port_num: 6379,
-        // cache: HashMap::new()
+        cache: Arc::new(Mutex::new(HashMap::new()))
     };
     redis_server.run().await
 }
