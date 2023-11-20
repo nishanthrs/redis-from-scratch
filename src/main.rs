@@ -46,27 +46,88 @@ impl RedisServer {
 
     fn handle_echo_cmd(stream: &mut TcpStream, echo_data: Vec<&str>) {
         /* Fetch the echo output and write it to stream */
-        assert!(echo_data.len() == 2, "Wrong number of args for ECHO command: {:?}!", echo_data);
-        let echo_resp = format!(
-            "+{}{}", echo_data.get(1).expect("Couldn't find ECHO output!"), RESP_DELIMITER
-        ).into_bytes();
+        if echo_data.len() != 2 {
+            let echo_err_response = format!(
+                "+Wrong number of args for ECHO command: {:?}!{}", echo_data, RESP_DELIMITER
+            ).into_bytes();
+            stream.write(&echo_err_response).expect("Writing ECHO err response to stream failed!");
+            return;
+        }
+
+        let echo_arg = match echo_data.get(1) {
+            Some(x) => x,
+            None => {
+                let echo_err_response = format!("+Couldn't find arg in ECHO request!{}", RESP_DELIMITER).into_bytes();
+                stream.write(&echo_err_response).expect("Writing ECHO err response to stream failed!");
+                return;
+            }
+        };
+        let echo_resp = format!("+{}{}", echo_arg, RESP_DELIMITER).into_bytes();
         stream.write(&echo_resp).expect("Writing ECHO response to stream failed!");
     }
 
     fn handle_get_cmd(stream: &mut TcpStream, get_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
-        assert!(get_data.len() == 2, "Wrong number of args for GET command: {:?}!", get_data);
-        let key = get_data.get(1).expect("Couldn't find key in request!").to_string();
-        let c = cache.lock().unwrap();
-        let val = c.get(&key).expect("Key doesn't exist in cache!");
+        /* Fetch the data from GET request and return data from cache to user */
+        if get_data.len() != 2 {
+            let get_err_response = format!(
+                "+Wrong number of args for GET command: {:?}!{}", get_data, RESP_DELIMITER
+            ).into_bytes();
+            stream.write(&get_err_response).expect("Writing GET err response to stream failed!");
+            return;
+        }
+
+        let key = match get_data.get(1) {
+            Some(x) => x.to_string(),
+            None => {
+                let get_err_response = format!("+Couldn't find key in GET request!{}", RESP_DELIMITER).into_bytes();
+                stream.write(&get_err_response).expect("Writing GET err response to stream failed!");
+                return;
+            }
+        };
+        let c = cache.lock().unwrap_or_else(|err| {
+            panic!("Failed to lock cache mutex: {}!", err);
+        });
+        let val = match c.get(&key) {
+            Some(x) => x,
+            None => {
+                let get_err_response = format!("+Key: {} not found in cache!{}", key, RESP_DELIMITER).into_bytes();
+                stream.write(&get_err_response).expect("Writing GET err response to stream failed!");
+                return;
+            }
+        };
         let get_resp = format!("+{}{}", val, RESP_DELIMITER).into_bytes();
         stream.write(&get_resp).expect("Writing GET response to stream failed!");
     }
 
     fn handle_set_cmd(stream: &mut TcpStream, set_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
-        assert!(set_data.len() == 4, "Wrong number of args for SET command: {:?}!", set_data);
-        let key = set_data.get(1).expect("Couldn't find key in request!").to_string();
-        let val = set_data.get(3).expect("Couldn't find val in request!").to_string();
-        let mut c = cache.lock().unwrap();
+        /* Fetch the data from SET request and write it to server cache */
+        if set_data.len() != 4 {
+            let set_err_response = format!(
+                "+Wrong number of args for SET command: {:?}!{}", set_data, RESP_DELIMITER
+            ).into_bytes();
+            stream.write(&set_err_response).expect("Writing SET err response to stream failed!");
+            return;
+        }
+
+        let key = match set_data.get(1) {
+            Some(x) => x.to_string(),
+            None => {
+                let get_err_response = format!("+Couldn't find key in GET request!{}", RESP_DELIMITER).into_bytes();
+                stream.write(&get_err_response).expect("Writing GET err response to stream failed!");
+                return;
+            }
+        };
+        let val = match set_data.get(3) {
+            Some(x) => x.to_string(),
+            None => {
+                let set_err_response = format!("+Couldn't find val in SET request!{}", RESP_DELIMITER).into_bytes();
+                stream.write(&set_err_response).expect("Writing SET err response to stream failed!");
+                return;
+            }
+        };
+        let mut c = cache.lock().unwrap_or_else(|err| {
+            panic!("Failed to lock cache mutex: {}!", err);
+        });
         c.insert(key, val);
         let set_resp = format!("+OK{}", RESP_DELIMITER).into_bytes();
         stream.write(&set_resp).expect("Writing SET response to stream failed!");
