@@ -68,7 +68,7 @@ impl RedisServer {
 
     fn handle_get_cmd(stream: &mut TcpStream, get_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
         /* Fetch the data from GET request and return data from cache to user */
-        if get_data.len() != 2 {
+        if get_data.len() < 2 {
             let get_err_response = format!(
                 "+Wrong number of args for GET command: {:?}!{}", get_data, RESP_DELIMITER
             ).into_bytes();
@@ -101,7 +101,7 @@ impl RedisServer {
 
     fn handle_set_cmd(stream: &mut TcpStream, set_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
         /* Fetch the data from SET request and write it to server cache */
-        if set_data.len() != 4 {
+        if set_data.len() < 4 {
             let set_err_response = format!(
                 "+Wrong number of args for SET command: {:?}!{}", set_data, RESP_DELIMITER
             ).into_bytes();
