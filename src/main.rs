@@ -16,7 +16,7 @@ const RESP_DELIMITER: &str = "\r\n";
 // TODO: Learn about sync primitives like Arc and try out <Arc<Mutex<RedisServer>>!
 // The reason why you can't pass in self into the async move block in tokio is that:
 // Tokio doesn't allow a single piece of data to be accessible from more than one task concurrently! It must be shared using sync primitives like Arc and Mutex.
-// Learn more about Arc::clone and how it works. Read the Tokio docs as well. (also fb workplace)
+// Learn more about Arc::clone and how it works. Read the Tokio docs as well.
 struct RedisServer {
     pub ip_addr: String,
     pub port_num: u16,
@@ -34,10 +34,6 @@ enum Command {
 }
 
 impl RedisServer {
-    // TODO[1]: Make error-handling more robust; return any errors back to the client
-    // TODO[2]: Have helper functions return Result types so that errors can be handled properly
-    // TODO[3]: Don't pass in stream into each function; have the handle_cmd spit out output bytes instead and write that to stream in handle_connection function
-
     fn handle_ping_cmd(stream: &mut TcpStream) {
         /* Write to stream the response for PING commands */
         let ping_resp = format!("+PONG{}", RESP_DELIMITER).into_bytes();
