@@ -130,6 +130,7 @@ impl RedisServer {
     }
 
     fn handle_cmd(redis_cmd: Command, request: &str, stream: &mut TcpStream, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
+        /* Route to appropriate command handler */
         // Should return a Redis RESP array: https://redis.io/docs/reference/protocol-spec
         let resp_array = request.split_terminator(RESP_DELIMITER).collect::<Vec<&str>>();
         match redis_cmd {
