@@ -7,6 +7,7 @@ use std::net::{TcpListener, TcpStream};
 use std::str::FromStr;
 use strum_macros::EnumString;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 
 const NULL_BYTE: &str = "\0";
@@ -21,7 +22,7 @@ struct RedisServer {
     pub ip_addr: String,
     pub port_num: u16,
     // TODO: Explore using a byte vector type and lifetimes
-    pub cache: Arc<Mutex<HashMap<String, String>>>
+    pub cache: Arc<Mutex<HashMap<String, (String, Option<u128>)>>>
 }
 
 #[derive(Debug, EnumString)]
@@ -62,7 +63,41 @@ impl RedisServer {
         stream.write(&echo_resp).expect("Writing ECHO response to stream failed!");
     }
 
-    fn handle_get_cmd(stream: &mut TcpStream, get_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
+    fn get_key(cache: &mut Arc<Mutex<HashMap<String, (String, Option<u128>)>>>, key: String) -> Option<String> {
+        /*
+        Get the data from the cache for the given key
+        If it's expired, return null. Else, return the actual value.
+        This method of expiration is PASSIVE; keys are only expired when they're accessed.
+        However, this method means that the cache can have many stale keys and run out of memory quickly and
+        TODO: Support active expiration where keys are checked and expired periodically: https://redis.io/commands/expire/#how-redis-expires-keys
+        */
+        let mut c = cache.lock().unwrap_or_else(|err| {
+            panic!("Failed to lock cache mutex: {}!", err);
+        });
+        match c.get(&key) {
+            Some((val, expiry_ts)) => {
+                let curr_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
+                debug!("Curr time: {} and expiry ts: {:?}", curr_time, expiry_ts);
+                match expiry_ts {
+                    Some(expiry) => {
+                        if curr_time > *expiry {
+                            c.remove(&key);
+                            None
+                        } else {
+                            Some(val.to_string())
+                        }
+                    },
+                    None => Some(val.to_string()),
+                }
+            },
+            None => None,
+        }
+    }
+
+    fn handle_get_cmd(stream: &mut TcpStream, get_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, (String, Option<u128>)>>>) {
         /* Fetch the data from GET request and return data from cache to user */
         if get_data.len() < 2 {
             let get_err_response = format!(
@@ -80,22 +115,41 @@ impl RedisServer {
                 return;
             }
         };
-        let c = cache.lock().unwrap_or_else(|err| {
-            panic!("Failed to lock cache mutex: {}!", err);
-        });
-        let val = match c.get(&key) {
-            Some(x) => x,
+        let val = Self::get_key(cache, key);
+        match val {
+            Some(v) => {
+                let get_resp = format!("+{:?}{}", v, RESP_DELIMITER).into_bytes();
+                stream.write(&get_resp).expect("Writing GET response to stream failed!");
+            },
             None => {
-                let get_err_response = format!("+Key: {} not found in cache!{}", key, RESP_DELIMITER).into_bytes();
+                let get_err_response = format!("+-1{}", RESP_DELIMITER).into_bytes();
                 stream.write(&get_err_response).expect("Writing GET err response to stream failed!");
                 return;
             }
-        };
-        let get_resp = format!("+{}{}", val, RESP_DELIMITER).into_bytes();
-        stream.write(&get_resp).expect("Writing GET response to stream failed!");
+        }
     }
 
-    fn handle_set_cmd(stream: &mut TcpStream, set_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
+    fn add_key(cache: &mut Arc<Mutex<HashMap<String, (String, Option<u128>)>>>, key: String, val: String, expiry_ms: Option<u128>) {
+        /* Write key to server cache and set expiry time if specified */
+        let mut c = cache.lock().unwrap_or_else(|err| {
+            panic!("Failed to lock cache mutex: {}!", err);
+        });
+        match expiry_ms {
+            Some(expiry) => {
+                let curr_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
+                let expiry_ts_ms = curr_time + expiry;
+                c.insert(key, (val, Some(expiry_ts_ms)));
+            },
+            None => {
+                c.insert(key, (val, None));
+            }
+        }
+    }
+
+    fn handle_set_cmd(stream: &mut TcpStream, set_data: Vec<&str>, cache: &mut Arc<Mutex<HashMap<String, (String, Option<u128>)>>>) {
         /* Fetch the data from SET request and write it to server cache */
         if set_data.len() < 4 {
             let set_err_response = format!(
@@ -121,15 +175,35 @@ impl RedisServer {
                 return;
             }
         };
-        let mut c = cache.lock().unwrap_or_else(|err| {
-            panic!("Failed to lock cache mutex: {}!", err);
-        });
-        c.insert(key, val);
+        let expiry_time_arg = match set_data.get(5) {
+            Some(option_arg) => match option_arg.to_uppercase().as_str() {
+                // TODO: Add enum to store command options
+                "PX" => {
+                    debug!("Parsed PX!!!!!!");
+                    match set_data.get(7) {
+                        Some(expiry_time) => expiry_time.parse::<u128>().ok(),
+                        None => {
+                            let set_err_response = format!("+Couldn't find PX value in SET request!{}", RESP_DELIMITER).into_bytes();
+                            stream.write(&set_err_response).expect("Writing SET err response to stream failed!");
+                            return;
+                        }
+                    }
+                },
+                other_option_arg => {
+                    let set_err_response = format!("+Unsupported option: {} for SET request!{}", other_option_arg, RESP_DELIMITER).into_bytes();
+                    stream.write(&set_err_response).expect("Writing SET err response to stream failed!");
+                    return;
+                }
+            }
+            None => None,
+        };
+        debug!("Key: {}, val: {}, expiry time: {:?}", key, val, expiry_time_arg);
+        Self::add_key(cache, key, val, expiry_time_arg);
         let set_resp = format!("+OK{}", RESP_DELIMITER).into_bytes();
         stream.write(&set_resp).expect("Writing SET response to stream failed!");
     }
 
-    fn handle_cmd(redis_cmd: Command, request: &str, stream: &mut TcpStream, cache: &mut Arc<Mutex<HashMap<String, String>>>) {
+    fn handle_cmd(redis_cmd: Command, request: &str, stream: &mut TcpStream, cache: &mut Arc<Mutex<HashMap<String, (String, Option<u128>)>>>) {
         /* Route to appropriate command handler */
         // Should return a Redis RESP array: https://redis.io/docs/reference/protocol-spec
         let resp_array = request.split_terminator(RESP_DELIMITER).collect::<Vec<&str>>();
@@ -174,11 +248,11 @@ impl RedisServer {
         let cmd: &str = resp_array.get(2).expect(
             format!("Unable to find a command at idx 2 in RESP array: {}", request).as_str()
         );
-        // TODO[4]: Handle case in which cmd is not a valid Redis command
+        // TODO: Handle case in which cmd is not a valid Redis command
         Command::from_str(cmd.to_uppercase().as_str()).unwrap()
     }
 
-    async fn handle_connection(stream: &mut TcpStream, cache: &mut Arc<Mutex<HashMap<String, String>>>) -> anyhow::Result<()> {
+    async fn handle_connection(stream: &mut TcpStream, cache: &mut Arc<Mutex<HashMap<String, (String, Option<u128>)>>>) -> anyhow::Result<()> {
         /* Handle a given stream/connection/request in an async task */
         let mut read_buffer = [0; CHUNK_SIZE];
         loop {
