@@ -122,7 +122,7 @@ impl RedisServer {
                 stream.write(&get_resp).expect("Writing GET response to stream failed!");
             },
             None => {
-                let get_err_response = format!("+-1{}", RESP_DELIMITER).into_bytes();
+                let get_err_response = format!("$-1{}", RESP_DELIMITER).into_bytes();
                 stream.write(&get_err_response).expect("Writing GET err response to stream failed!");
                 return;
             }
