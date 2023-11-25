@@ -118,7 +118,7 @@ impl RedisServer {
         let val = Self::get_key(cache, key);
         match val {
             Some(v) => {
-                let get_resp = format!("+{:?}{}", v, RESP_DELIMITER).into_bytes();
+                let get_resp = format!("+{}{}", v, RESP_DELIMITER).into_bytes();
                 stream.write(&get_resp).expect("Writing GET response to stream failed!");
             },
             None => {
